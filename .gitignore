@@ -1,0 +1,23 @@
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables
+.env
+*.env
+
+# Virtual environments
+venv/
+ENV/
+.venv/
+
+# macOS (in case you zip/move from Mac)
+.DS_Store
