@@ -9,7 +9,10 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+#My Files
 *.backup
+*.log
 
 # Environment variables
 .env
