@@ -35,25 +35,26 @@ The app expects several environment variables (set these in your Code Engine pro
 Clone this repo and install dependencies:
 
 ```bash
-git clone https://github.com/<your-org>/<your-repo>.git
-cd <your-repo>
 pip install -r requirements.txt
 
 ```
 
 Create a .env file with your environment variables:
+
+````bash
 IBM_API_KEY=your-ibm-api-key
 ACCOUNT_ID=your-account-id
 RESOURCE_GROUP_ID=your-resource-group-id
 ACCESS_GROUP_ID=your-access-group-id
 SITE_TOKEN=your-secret-token
+```
 
 Run the app:
 
 ```bash
 python app.py
 
-```
+````
 
 It will listen on http://localhost:8080.
 
