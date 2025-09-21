@@ -13,6 +13,7 @@ import time
 
 RATE_LIMIT = 3  # max requests
 RATE_WINDOW = 24 * 60 * 60  # 24 hours in seconds
+RELEASE_VERSION = "2.5"
 request_log = defaultdict(list)  # stores timestamps per IP
 
 def is_rate_limited(ip):
@@ -154,8 +155,11 @@ def log_invite(email, first_name, last_name):
 # --- Routes ---
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True, "access_group": ACCESS_GROUP_NAME}), 200
-
+    return jsonify({
+        "ok": True,
+        "access_group_name": ACCESS_GROUP_NAME,
+        "release_version": RELEASE_VERSION
+    }), 200
 
 @app.route("/invite", methods=["POST"])
 def invite():
