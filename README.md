@@ -41,12 +41,13 @@ pip install -r requirements.txt
 
 Create a .env file with your environment variables:
 
-````bash
+```bash
 IBM_API_KEY=your-ibm-api-key
 ACCOUNT_ID=your-account-id
 RESOURCE_GROUP_ID=your-resource-group-id
 ACCESS_GROUP_ID=your-access-group-id
 SITE_TOKEN=your-secret-token
+
 ```
 
 Run the app:
@@ -54,7 +55,7 @@ Run the app:
 ```bash
 python app.py
 
-````
+```
 
 It will listen on http://localhost:8080.
 
@@ -65,4 +66,5 @@ curl -X POST http://localhost:8080/invite \
   -H "Content-Type: application/json" \
   -H "X-SITE-TOKEN: <your-site-token>" \
   -d '{"email":"student@example.com"}'
+
 ```
