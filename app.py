@@ -8,6 +8,25 @@ import datetime
 import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from collections import defaultdict
+import time
+
+RATE_LIMIT = 3  # max requests
+RATE_WINDOW = 24 * 60 * 60  # 24 hours in seconds
+request_log = defaultdict(list)  # stores timestamps per IP
+
+def is_rate_limited(ip):
+    now = time.time()
+    timestamps = request_log[ip]
+
+    # Remove timestamps older than 24 hours
+    request_log[ip] = [t for t in timestamps if now - t < RATE_WINDOW]
+
+    if len(request_log[ip]) >= RATE_LIMIT:
+        return True
+
+    request_log[ip].append(now)
+    return False
 
 load_dotenv()
 app = Flask(__name__)
@@ -143,6 +162,10 @@ def invite():
     if SITE_TOKEN and request.headers.get("X-SITE-TOKEN") != SITE_TOKEN:
         return jsonify({"error": "invalid SITE_TOKEN"}), 403
 
+    client_ip = request.remote_addr
+    if is_rate_limited(client_ip):
+        return jsonify({"error": f"rate limit exceeded ({RATE_LIMIT} invites per 24h)"}), 429
+
     body = request.get_json(force=True, silent=True) or {}
     email = body.get("email")
     first_name = body.get("first_name") or body.get("firstName")
@@ -171,7 +194,6 @@ def invite():
         result["policy_created"] = False
 
     return jsonify(result), 200
-
 
 @app.route("/cleanup", methods=["POST"])
 def cleanup():
