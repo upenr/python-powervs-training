@@ -66,41 +66,71 @@ def invite_user(iam_token, email, access_group_id=None, first_name=None, last_na
     return r.status_code, r.text
 
 def create_time_limited_policy(iam_token, access_group_id, resource_group_id, email_for_desc=None):
-    """Create a fixed 7-day IAM policy attached to access group."""
     now = datetime.datetime.utcnow()
     start_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_iso   = (now + datetime.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     payload = {
         "type": "access",
-        "description": f"Temporary 7-day access for student ({email_for_desc})",
+        "description": f"Temporary 7-day Viewer access for student ({email_for_desc})",
         "subjects": [
-            {"attributes": [{"name": "access_group_id", "value": access_group_id}]}
+            {
+                "attributes": [
+                    {
+                        "name": "access_group_id",
+                        "operator": "stringEquals",
+                        "value": access_group_id
+                    }
+                ]
+            }
         ],
-        "roles": [{"role_id": ROLE_ID}],
+        "roles": [
+            { "role_id": ROLE_ID }
+        ],
         "resources": [
-            {"attributes": [
-                {"name": "accountId", "value": ACCOUNT_ID},
-                {"name": "resourceGroupId", "value": resource_group_id}
-            ]}
+            {
+                "attributes": [
+                    {
+                        "name": "accountId",
+                        "operator": "stringEquals",
+                        "value": ACCOUNT_ID
+                    },
+                    {
+                        "name": "resourceGroupId",
+                        "operator": "stringEquals",
+                        "value": resource_group_id
+                    }
+                ]
+            }
         ],
         "pattern": "time-based-conditions:once",
         "rule": {
             "operator": "and",
             "conditions": [
-                {"key": "{{environment.attributes.current_date_time}}",
-                 "operator": "dateTimeGreaterThanOrEquals",
-                 "value": start_iso},
-                {"key": "{{environment.attributes.current_date_time}}",
-                 "operator": "dateTimeLessThanOrEquals",
-                 "value": end_iso}
+                {
+                    "key": "{{environment.attributes.current_date_time}}",
+                    "operator": "dateTimeGreaterThanOrEquals",
+                    "value": start_iso
+                },
+                {
+                    "key": "{{environment.attributes.current_date_time}}",
+                    "operator": "dateTimeLessThanOrEquals",
+                    "value": end_iso
+                }
             ]
         }
     }
-    headers = {"Authorization": f"Bearer {iam_token}", "Content-Type": "application/json"}
-    r = requests.post(POLICIES_V2, headers=headers, json=payload, timeout=20)
-    r.raise_for_status()
-    return r.json()
+
+    headers = {
+        "Authorization": f"Bearer {iam_token}",
+        "Content-Type": "application/json"
+    }
+    resp = requests.post(POLICIES_V2, json=payload, headers=headers, timeout=20)
+    # log for debugging
+    if not resp.ok:
+        app.logger.error("Policy request failed: %s %s", resp.status_code, resp.text)
+        resp.raise_for_status()
+    return resp.json()
 
 @app.route("/health", methods=["GET"])
 def health():
