@@ -6,6 +6,7 @@
 import os
 import datetime
 import requests
+import logging
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from collections import defaultdict
@@ -149,8 +150,9 @@ def create_time_limited_policy(iam_token, access_group_id, resource_group_id, em
 
 def log_invite(email, first_name, last_name):
     with open("invites.log", "a") as f:
-        f.write(f"{datetime.datetime.utcnow().isoformat()} - Invited {email} ({first_name} {last_name})\n")
-
+        f.write(f"{datetime.datetime.now(datetime.UTC).isoformat()} - Invited {email} ({first_name} {last_name})\n")
+    logging.info(f"Invited {email} ({first_name} {last_name})")
+    print(f"Invited {email} ({first_name} {last_name})")
 
 # --- Routes ---
 @app.route("/health", methods=["GET"])
