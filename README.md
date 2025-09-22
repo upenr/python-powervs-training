@@ -1,6 +1,6 @@
 # Student Invite API
 
-This is a small Flask web service that allows students to request temporary access to an IBM Cloud PowerVS account.  
+This is a Flask web service that allows students to request temporary access to an IBM Cloud PowerVS account.  
 When a student calls the `/invite` endpoint with their email address, the service automatically:
 
 - Invites the user to the IBM Cloud account.
@@ -14,7 +14,7 @@ When a student calls the `/invite` endpoint with their email address, the servic
 - Python 3.9+ (for local runs)
 - IBM Cloud account with **IAM admin rights**
 - An **IBM API key** with authority to invite users and assign IAM policies
-- A configured **Code Engine project** if deploying serverless
+- A configured **IBM Code Engine project** if deploying serverless
 
 ---
 
@@ -22,10 +22,10 @@ When a student calls the `/invite` endpoint with their email address, the servic
 
 The app expects several environment variables (set these in your Code Engine project or locally with a `.env` file):
 
-- `IBM_API_KEY` – IBM Cloud API key (user key, not service ID)
+- `IBM_API_KEY` – IBM Cloud API key
 - `ACCOUNT_ID` – Your IBM Cloud account ID
-- `RESOURCE_GROUP_ID` – ID of the resource group students should see
-- `ACCESS_GROUP_ID` – ID of the access group (For example, `QZD35G-student-access` I've hardcoded)
+- `RESOURCE_GROUP_ID` – ID of the Resource Group students should see
+- `ACCESS_GROUP_ID` – Access Group name (For example, `QZD35G-student-access` I've hardcoded)
 - `SITE_TOKEN` – Shared secret token to restrict who can call the endpoint
 
 ---
