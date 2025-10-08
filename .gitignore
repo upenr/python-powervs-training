@@ -13,6 +13,7 @@ __pycache__/
 #My Files
 *.backup
 *.log
+*.json
 
 # Environment variables
 .env

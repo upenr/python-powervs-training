@@ -14,7 +14,7 @@ import time
 
 RATE_LIMIT = 3  # max requests
 RATE_WINDOW = 24 * 60 * 60  # 24 hours in seconds
-RELEASE_VERSION = "2.5"
+RELEASE_VERSION = "2.6"
 request_log = defaultdict(list)  # stores timestamps per IP
 
 def is_rate_limited(ip):
@@ -214,23 +214,25 @@ def cleanup():
     members = list_access_group_members(iam_token, group_id)
     deleted = []
     now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+
     for m in members:
         iam_id = m.get("iam_id") or m.get("id")
         if not iam_id:
             continue
-        created_dt = m.get("added_on") or m.get("addedOn")
+        created_dt = m.get("created_at") or m.get("created")
         if not created_dt:
             continue
         try:
             created_dt = datetime.datetime.fromisoformat(created_dt.replace("Z", "+00:00"))
         except:
             continue
-        if (now - created_dt).days >= 7:
-            st = requests.delete(f"{USER_MGMT_BASE}/v2/accounts/{ACCOUNT_ID}/users/{iam_id}",
-                                 headers={"Authorization": f"Bearer {iam_token}"}).status_code
+        if (now - created_dt).days >= 7:   
+            st = requests.delete(
+                f"{USER_MGMT_BASE}/v2/accounts/{ACCOUNT_ID}/users/{iam_id}",
+                headers={"Authorization": f"Bearer {iam_token}"}
+            ).status_code
             deleted.append({"iam_id": iam_id, "delete_status": st})
     return jsonify({"deleted": deleted, "checked": len(members)}), 200
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
