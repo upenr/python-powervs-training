@@ -1,4 +1,5 @@
 flask
+requests
 ibm-cloud-sdk-core
 ibm-platform-services
 gunicorn

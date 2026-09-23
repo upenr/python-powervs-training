@@ -47,6 +47,7 @@ ACCOUNT_ID=your-account-id
 RESOURCE_GROUP_ID=your-resource-group-id
 ACCESS_GROUP_ID=your-access-group-id
 SITE_TOKEN=your-secret-token
+ALLOWED_ACCESS_DAYS=7 # Number of days users are allowed access
 
 ```
 
