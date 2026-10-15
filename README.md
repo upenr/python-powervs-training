@@ -1,71 +1,75 @@
-# Student Invite API
+# PowerVS Student Access and Course Feedback API
 
-This is a Flask web service that allows students to request temporary access to an IBM Cloud PowerVS account.  
-When a student calls the `/invite` endpoint with their email address, the service automatically:
+A Flask service for IBM PowerVS technical training labs. This app provides students with temporary access to IBM Cloud and stores their course feedback in IBM Cloudant, a NoSQL database running on IBM Cloud.
 
-- Invites the user to the IBM Cloud account.
-- Adds them to my IBM Cloud access group.
-- Creates a time-limited IAM policy (default: 7 days) that restricts their access to the target resource group.
+## Features
 
----
+- Invites a student to an IBM Cloud account.
+- Adds the student to a configured IAM access group.
+- Creates a time-limited IAM policy for a specific resource group.
+- Removes expired users through the cleanup endpoint.
+- Stores course feedback in an IBM Cloudant database.
+- Protects administrative endpoints with an `X-SITE-TOKEN` header.
+- The student-facing HTML that calls this backend is intentionally excluded from this repository. Reach out to me if you need it.
 
-## Prerequisites
+## Endpoints
 
-- Python 3.9+ (for local runs)
-- IBM Cloud account with **IAM admin rights**
-- An **IBM API key** with authority to invite users and assign IAM policies
-- A configured **IBM Code Engine project** if deploying serverless
+- `GET /health` - Displays service health and configuration status.
+- `GET /diagnostics` - Tests IBM Cloud configuration. Requires `X-SITE-TOKEN`.
+- `POST /invite` - Invites a student and creates temporary access. Requires `X-SITE-TOKEN`.
+- `POST /cleanup` - Removes expired student accounts. Requires `X-SITE-TOKEN`.
+- `POST /feedback` - Stores course feedback in Cloudant.
 
----
+## Requirements
 
-## Configuration
+- Python 3.9 or later
+- IBM Cloud account and API key with the required IAM permissions
+- IBM Cloud access group and target resource group
+- IBM Cloudant instance and database
+- IBM Code Engine project for deployment
 
-The app expects several environment variables (set these in your Code Engine project or locally with a `.env` file):
+## Environment variables
 
-- `IBM_API_KEY` – IBM Cloud API key
-- `ACCOUNT_ID` – Your IBM Cloud account ID
-- `RESOURCE_GROUP_ID` – ID of the Resource Group students should see
-- `ACCESS_GROUP_ID` – Access Group name (For example, `QZD35G-student-access` I've hardcoded)
-- `SITE_TOKEN` – Shared secret token to restrict who can call the endpoint
+Create a `.env` file for local testing or configure these values in Code Engine:
 
----
-
-## How to run locally
-
-Clone this repo and install dependencies:
-
-```bash
-pip install -r requirements.txt
-
-```
-
-Create a .env file with your environment variables:
-
-```bash
-IBM_API_KEY=your-ibm-api-key
+```dotenv
+IBM_API_KEY=your-ibm-cloud-api-key
 ACCOUNT_ID=your-account-id
 RESOURCE_GROUP_ID=your-resource-group-id
 ACCESS_GROUP_ID=your-access-group-id
-SITE_TOKEN=your-secret-token
-ALLOWED_ACCESS_DAYS=7 # Number of days users are allowed access
-
+ACCESS_GROUP_NAME=QZD35G-student-access
+SITE_TOKEN=your-secret-site-token
+ALLOWED_ACCESS_DAYS=7
+CLOUDANT_URL=https://your-cloudant-instance-url
+CLOUDANT_APIKEY=your-cloudant-api-key
+CLOUDANT_DB=qzc51g-feedback
+PORT=8080
 ```
 
-Run the app:
+`ACCESS_GROUP_ID` is optional when `ACCESS_GROUP_NAME` can be used to locate the group.
+
+## Run locally
 
 ```bash
+python -m pip install -r requirements.txt
 python app.py
-
 ```
 
-It will listen on http://localhost:8080.
+The service listens on `http://localhost:8080` by default.
 
-Test with curl:
+## Test the invite endpoint
 
 ```bash
 curl -X POST http://localhost:8080/invite \
   -H "Content-Type: application/json" \
-  -H "X-SITE-TOKEN: <your-site-token>" \
+  -H "X-SITE-TOKEN: your-site-token" \
   -d '{"email":"student@example.com"}'
+```
 
+## Test the feedback endpoint
+
+```bash
+curl -X POST http://localhost:8080/feedback \
+  -H "Content-Type: application/json" \
+  -d '{"course":"QZC51G","class_number":"1234567","name":"Test Student","feedback":"The course is going well."}'
 ```

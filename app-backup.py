@@ -1,37 +1,21 @@
-# app.py
-# Flask app: invite users into account + add to access-group + create 7-day time-limited policy
-# Also: /cleanup endpoint to remove users older than 7 days from that access group.
-# Logs invites to invites.log
-
 import os
-import datetime
-import requests
-import logging
-from flask import Flask, request, jsonify
-from dotenv import load_dotenv
-from collections import defaultdict
+import sys
 import time
+import datetime
+import logging
+from collections import defaultdict
 
-RATE_LIMIT = 3  # max requests
-RATE_WINDOW = 24 * 60 * 60  # 24 hours in seconds
-RELEASE_VERSION = "2.6"
-request_log = defaultdict(list)  # stores timestamps per IP
+import requests
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-def is_rate_limited(ip):
-    now = time.time()
-    timestamps = request_log[ip]
-
-    # Remove timestamps older than 24 hours
-    request_log[ip] = [t for t in timestamps if now - t < RATE_WINDOW]
-
-    if len(request_log[ip]) >= RATE_LIMIT:
-        return True
-
-    request_log[ip].append(now)
-    return False
 
 load_dotenv()
-app = Flask(__name__)
+
+RELEASE_VERSION = "2.7"
+RATE_LIMIT = 3
+RATE_WINDOW = 24 * 60 * 60
 
 IAM_TOKEN_URL = "https://iam.cloud.ibm.com/identity/token"
 USER_MGMT_BASE = "https://user-management.cloud.ibm.com"
@@ -39,200 +23,552 @@ IAM_BASE = "https://iam.cloud.ibm.com"
 ACCESS_GROUPS_BASE = f"{IAM_BASE}/v2/groups"
 POLICIES_V2 = f"{IAM_BASE}/v2/policies"
 
-# Env variables
 IBM_API_KEY = os.getenv("IBM_API_KEY")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 RESOURCE_GROUP_ID = os.getenv("RESOURCE_GROUP_ID")
-ACCESS_GROUP_NAME = os.getenv("ACCESS_GROUP_NAME", "QZD35G-student-access")
-ROLE_ID = os.getenv("ROLE_ID", "crn:v1:bluemix:public:iam::::role:Viewer")
+ACCESS_GROUP_ID = os.getenv("ACCESS_GROUP_ID")
+ACCESS_GROUP_NAME = os.getenv(
+    "ACCESS_GROUP_NAME",
+    "QZD35G-student-access"
+)
+ROLE_ID = os.getenv(
+    "ROLE_ID",
+    "crn:v1:bluemix:public:iam::::role:Viewer"
+)
 SITE_TOKEN = os.getenv("SITE_TOKEN")
 PORT = int(os.getenv("PORT", "8080"))
+ALLOWED_ACCESS_DAYS = int(os.getenv("ALLOWED_ACCESS_DAYS", "7"))
 
-if not IBM_API_KEY or not ACCOUNT_ID:
-    raise RuntimeError("Please set IBM_API_KEY and ACCOUNT_ID environment variables")
+required = {
+    "IBM_API_KEY": IBM_API_KEY,
+    "ACCOUNT_ID": ACCOUNT_ID,
+    "RESOURCE_GROUP_ID": RESOURCE_GROUP_ID,
+    "SITE_TOKEN": SITE_TOKEN
+}
+
+missing = [name for name, value in required.items() if not value]
+
+if missing:
+    raise RuntimeError(
+        f"Missing environment variables: {', '.join(missing)}"
+    )
 
 
-# --- Helpers ---
-def get_iam_token():
-    data = {"grant_type": "urn:ibm:params:oauth:grant-type:apikey", "apikey": IBM_API_KEY}
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    r = requests.post(IAM_TOKEN_URL, data=data, headers=headers, timeout=20)
-    r.raise_for_status()
-    return r.json()["access_token"]
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+logger = logging.getLogger("powervs-training")
+
+app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+request_log = defaultdict(list)
 
 
-def find_access_group_id(iam_token, group_name):
-    params = {"account_id": ACCOUNT_ID, "name": group_name}
-    headers = {"Authorization": f"Bearer {iam_token}", "Accept": "application/json"}
-    r = requests.get(ACCESS_GROUPS_BASE, params=params, headers=headers, timeout=20)
-    r.raise_for_status()
-    js = r.json()
-    groups = js.get("groups") or js.get("resources") or []
-    for g in groups:
-        if g.get("name") == group_name or g.get("display_name") == group_name:
-            return g.get("id")
+def client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+
+    return request.remote_addr or "unknown"
+
+
+def is_rate_limited(ip):
+    now = time.time()
+
+    request_log[ip] = [
+        timestamp
+        for timestamp in request_log[ip]
+        if now - timestamp < RATE_WINDOW
+    ]
+
+    if len(request_log[ip]) >= RATE_LIMIT:
+        return True
+
+    request_log[ip].append(now)
+    return False
+
+
+def check_site_token():
+    if request.headers.get("X-SITE-TOKEN") != SITE_TOKEN:
+        return jsonify({
+            "ok": False,
+            "error": "invalid SITE_TOKEN"
+        }), 403
+
     return None
 
 
-def list_access_group_members(iam_token, access_group_id):
-    url = f"{ACCESS_GROUPS_BASE}/{access_group_id}/members"
-    headers = {"Authorization": f"Bearer {iam_token}", "Accept": "application/json"}
-    members = []
-    params = {"limit": 100}
-    while True:
-        r = requests.get(url, headers=headers, params=params, timeout=20)
-        r.raise_for_status()
-        js = r.json()
-        page_members = js.get("members") or js.get("resources") or js.get("users") or []
-        members.extend(page_members)
-        if js.get("next"):
-            url = js["next"]
-            params = None
-            continue
-        break
-    return members
-
-
-def invite_user_to_account(iam_token, email, first_name=None, last_name=None, access_group_id=None):
-    url = f"{USER_MGMT_BASE}/v2/accounts/{ACCOUNT_ID}/users"
-    headers = {"Authorization": f"Bearer {iam_token}", "Content-Type": "application/json", "Accept": "application/json"}
-    user_obj = {"email": email}
-    if first_name:
-        user_obj["first_name"] = first_name
-    if last_name:
-        user_obj["last_name"] = last_name
-    payload = {"users": [user_obj]}
-    if access_group_id:
-        payload["access_groups"] = [access_group_id]
-    r = requests.post(url, json=payload, headers=headers, timeout=30)
+def log_api_error(operation, response):
     try:
-        js = r.json()
-    except:
-        js = None
-    return r.status_code, r.text, js
+        message = response.json()
+    except ValueError:
+        message = response.text[:2000]
+
+    transaction_id = (
+        response.headers.get("Transaction-Id")
+        or response.headers.get("X-Global-Transaction-ID")
+    )
+
+    logger.error(
+        "%s failed: status=%s transaction_id=%s response=%s",
+        operation,
+        response.status_code,
+        transaction_id,
+        message
+    )
+
+    return transaction_id
 
 
-def create_time_limited_policy(iam_token, access_group_id, resource_group_id, email):
-    now = datetime.datetime.utcnow()
+def auth_headers(iam_token, json_content=False):
+    headers = {
+        "Authorization": f"Bearer {iam_token}",
+        "Accept": "application/json"
+    }
+
+    if json_content:
+        headers["Content-Type"] = "application/json"
+
+    return headers
+
+
+def get_iam_token():
+    response = requests.post(
+        IAM_TOKEN_URL,
+        data={
+            "grant_type":
+                "urn:ibm:params:oauth:grant-type:apikey",
+            "apikey": IBM_API_KEY
+        },
+        headers={
+            "Content-Type":
+                "application/x-www-form-urlencoded"
+        },
+        timeout=30
+    )
+
+    if not response.ok:
+        log_api_error("get IAM token", response)
+
+    response.raise_for_status()
+    return response.json()["access_token"]
+
+
+def find_access_group_id(iam_token):
+    if ACCESS_GROUP_ID:
+        return ACCESS_GROUP_ID
+
+    response = requests.get(
+        ACCESS_GROUPS_BASE,
+        params={
+            "account_id": ACCOUNT_ID,
+            "name": ACCESS_GROUP_NAME
+        },
+        headers=auth_headers(iam_token),
+        timeout=30
+    )
+
+    if not response.ok:
+        log_api_error("find access group", response)
+
+    response.raise_for_status()
+
+    groups = (
+        response.json().get("groups")
+        or response.json().get("resources")
+        or []
+    )
+
+    for group in groups:
+        if (
+            group.get("name") == ACCESS_GROUP_NAME
+            or group.get("display_name") == ACCESS_GROUP_NAME
+        ):
+            return group.get("id")
+
+    return None
+
+
+def invite_user(iam_token, email, first_name, last_name, group_id):
+    user = {"email": email}
+
+    if first_name:
+        user["first_name"] = first_name
+
+    if last_name:
+        user["last_name"] = last_name
+
+    payload = {
+        "users": [user],
+        "access_groups": [group_id]
+    }
+
+    response = requests.post(
+        f"{USER_MGMT_BASE}/v2/accounts/{ACCOUNT_ID}/users",
+        json=payload,
+        headers=auth_headers(iam_token, json_content=True),
+        timeout=30
+    )
+
+    if not response.ok:
+        log_api_error("invite user", response)
+
+    return response
+
+
+def create_policy(iam_token, group_id, email):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expires = now + datetime.timedelta(days=ALLOWED_ACCESS_DAYS)
+
     start_iso = now.strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    end_iso = (now + datetime.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-
-    headers = {"Authorization": f"Bearer {iam_token}", "Accept": "application/json"}
-    existing_policies = requests.get(POLICIES_V2, headers=headers, timeout=20).json().get("resources", [])
-
-    # Skip if a policy already exists for this access group and email
-    for p in existing_policies:
-        subj_attrs = p.get("subject", {}).get("attributes", [])
-        desc = p.get("description", "")
-        if any(a.get("key") == "access_group_id" and a.get("value") == access_group_id for a in subj_attrs):
-            if email in desc:
-                return p
+    end_iso = expires.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
     payload = {
         "type": "access",
-        "description": f"Temporary access for {email} (expires in 7 days)",
-        "subject": {"attributes": [{"key": "access_group_id", "operator": "stringEquals", "value": access_group_id}]},
-        "resource": {"attributes": [{"key": "accountId", "operator": "stringEquals", "value": ACCOUNT_ID},
-                                    {"key": "resourceGroupId", "operator": "stringEquals", "value": resource_group_id}]},
-        "control": {"grant": {"roles": [{"role_id": ROLE_ID}]}},
+        "description": (
+            f"Temporary access for {email}, expires {end_iso}"
+        ),
+        "subject": {
+            "attributes": [{
+                "key": "access_group_id",
+                "operator": "stringEquals",
+                "value": group_id
+            }]
+        },
+        "resource": {
+            "attributes": [
+                {
+                    "key": "accountId",
+                    "operator": "stringEquals",
+                    "value": ACCOUNT_ID
+                },
+                {
+                    "key": "resourceGroupId",
+                    "operator": "stringEquals",
+                    "value": RESOURCE_GROUP_ID
+                }
+            ]
+        },
+        "control": {
+            "grant": {
+                "roles": [{"role_id": ROLE_ID}]
+            }
+        },
         "pattern": "time-based-conditions:once",
-        "rule": {"operator": "and",
-                 "conditions": [
-                     {"key": "{{environment.attributes.current_date_time}}", "operator": "dateTimeGreaterThanOrEquals", "value": start_iso},
-                     {"key": "{{environment.attributes.current_date_time}}", "operator": "dateTimeLessThanOrEquals", "value": end_iso}
-                 ]}
+        "rule": {
+            "operator": "and",
+            "conditions": [
+                {
+                    "key":
+                        "{{environment.attributes.current_date_time}}",
+                    "operator":
+                        "dateTimeGreaterThanOrEquals",
+                    "value": start_iso
+                },
+                {
+                    "key":
+                        "{{environment.attributes.current_date_time}}",
+                    "operator":
+                        "dateTimeLessThanOrEquals",
+                    "value": end_iso
+                }
+            ]
+        }
     }
 
-    r = requests.post(POLICIES_V2, json=payload, headers={"Authorization": f"Bearer {iam_token}", "Content-Type": "application/json"}, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    response = requests.post(
+        POLICIES_V2,
+        params={"account_id": ACCOUNT_ID},
+        json=payload,
+        headers=auth_headers(iam_token, json_content=True),
+        timeout=30
+    )
+
+    if not response.ok:
+        log_api_error("create policy", response)
+
+    response.raise_for_status()
+    return response.json()
 
 
-def log_invite(email, first_name, last_name):
-    with open("invites.log", "a") as f:
-        f.write(f"{datetime.datetime.now(datetime.UTC).isoformat()} - Invited {email} ({first_name} {last_name})\n")
-    logging.info(f"Invited {email} ({first_name} {last_name})")
-    print(f"Invited {email} ({first_name} {last_name})")
+def list_group_members(iam_token, group_id):
+    response = requests.get(
+        f"{ACCESS_GROUPS_BASE}/{group_id}/members",
+        params={"limit": 100, "verbose": "true"},
+        headers=auth_headers(iam_token),
+        timeout=30
+    )
 
-# --- Routes ---
+    if not response.ok:
+        log_api_error("list group members", response)
+
+    response.raise_for_status()
+
+    return response.json().get("members") or []
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({
+        "ok": True,
+        "service": "PowerVS Student Invite API",
+        "release_version": RELEASE_VERSION,
+        "health": "/health",
+        "diagnostics": "/diagnostics",
+        "invite": "POST /invite",
+        "cleanup": "POST /cleanup"
+    }), 200
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
         "ok": True,
-        "access_group_name": ACCESS_GROUP_NAME,
-        "release_version": RELEASE_VERSION
+        "release_version": RELEASE_VERSION,
+        "access_group_name": ACCESS_GROUP_NAME
     }), 200
+
+
+@app.route("/diagnostics", methods=["GET"])
+def diagnostics():
+    token_error = check_site_token()
+
+    if token_error:
+        return token_error
+
+    try:
+        iam_token = get_iam_token()
+        group_id = find_access_group_id(iam_token)
+
+        return jsonify({
+            "ok": bool(group_id),
+            "iam_token": "ok",
+            "access_group_id": group_id,
+            "resource_group_configured": bool(RESOURCE_GROUP_ID),
+            "release_version": RELEASE_VERSION
+        }), 200 if group_id else 404
+
+    except requests.HTTPError as error:
+        transaction_id = log_api_error(
+            "diagnostics",
+            error.response
+        )
+
+        return jsonify({
+            "ok": False,
+            "status": error.response.status_code,
+            "transaction_id": transaction_id
+        }), 502
+
 
 @app.route("/invite", methods=["POST"])
 def invite():
-    if SITE_TOKEN and request.headers.get("X-SITE-TOKEN") != SITE_TOKEN:
-        return jsonify({"error": "invalid SITE_TOKEN"}), 403
+    token_error = check_site_token()
 
-    client_ip = request.remote_addr
-    if is_rate_limited(client_ip):
-        return jsonify({"error": f"rate limit exceeded ({RATE_LIMIT} invites per 24h)"}), 429
+    if token_error:
+        return token_error
 
-    body = request.get_json(force=True, silent=True) or {}
-    email = body.get("email")
-    first_name = body.get("first_name") or body.get("firstName")
-    last_name = body.get("last_name") or body.get("lastName")
+    ip = client_ip()
+
+    if is_rate_limited(ip):
+        return jsonify({
+            "ok": False,
+            "error": "rate limit exceeded"
+        }), 429
+
+    body = request.get_json(silent=True) or {}
+
+    email = str(body.get("email", "")).strip().lower()
+    first_name = (
+        body.get("first_name")
+        or body.get("firstName")
+        or ""
+    ).strip()
+    last_name = (
+        body.get("last_name")
+        or body.get("lastName")
+        or ""
+    ).strip()
+
     if not email:
-        return jsonify({"error": "missing email"}), 400
+        return jsonify({
+            "ok": False,
+            "error": "missing email"
+        }), 400
 
-    iam_token = get_iam_token()
-    group_id = find_access_group_id(iam_token, ACCESS_GROUP_NAME)
-    if not group_id:
-        return jsonify({"error": "access group not found"}), 404
-
-    log_invite(email, first_name or "", last_name or "")
-
-    # Invite user
-    status, text, js = invite_user_to_account(iam_token, email, first_name, last_name, group_id)
-    result = {"invite_status": status}
-
-    # Policy
     try:
-        policy_resp = create_time_limited_policy(iam_token, group_id, RESOURCE_GROUP_ID, email)
-        result["policy_created"] = True
-    except requests.HTTPError:
-        result["policy_created"] = False
-    except Exception:
-        result["policy_created"] = False
+        iam_token = get_iam_token()
+        group_id = find_access_group_id(iam_token)
 
-    return jsonify(result), 200
+        if not group_id:
+            return jsonify({
+                "ok": False,
+                "error": "access group not found"
+            }), 404
+
+        invitation = invite_user(
+            iam_token,
+            email,
+            first_name,
+            last_name,
+            group_id
+        )
+
+        if not invitation.ok:
+            transaction_id = log_api_error(
+                "invite user",
+                invitation
+            )
+
+            return jsonify({
+                "ok": False,
+                "stage": "invite_user",
+                "status": invitation.status_code,
+                "transaction_id": transaction_id
+            }), 502
+
+        policy = create_policy(
+            iam_token,
+            group_id,
+            email
+        )
+
+        logger.info(
+            "Invite completed: email=%s ip=%s policy_id=%s",
+            email,
+            ip,
+            policy.get("id")
+        )
+
+        return jsonify({
+            "ok": True,
+            "email": email,
+            "invite_status": invitation.status_code,
+            "policy_created": True,
+            "policy_id": policy.get("id"),
+            "access_days": ALLOWED_ACCESS_DAYS
+        }), 200
+
+    except requests.HTTPError as error:
+        transaction_id = log_api_error(
+            "IBM Cloud API",
+            error.response
+        )
+
+        return jsonify({
+            "ok": False,
+            "status": error.response.status_code,
+            "transaction_id": transaction_id
+        }), 502
+
+    except Exception:
+        logger.exception("Unexpected invitation failure")
+
+        return jsonify({
+            "ok": False,
+            "error": "unexpected invitation failure"
+        }), 500
+
 
 @app.route("/cleanup", methods=["POST"])
 def cleanup():
-    if SITE_TOKEN and request.headers.get("X-SITE-TOKEN") != SITE_TOKEN:
-        return jsonify({"error": "invalid SITE_TOKEN"}), 403
+    token_error = check_site_token()
 
-    iam_token = get_iam_token()
-    group_id = find_access_group_id(iam_token, ACCESS_GROUP_NAME)
-    if not group_id:
-        return jsonify({"error": "access group not found"}), 404
+    if token_error:
+        return token_error
 
-    members = list_access_group_members(iam_token, group_id)
-    deleted = []
-    now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+    try:
+        iam_token = get_iam_token()
+        group_id = find_access_group_id(iam_token)
 
-    for m in members:
-        iam_id = m.get("iam_id") or m.get("id")
-        if not iam_id:
-            continue
-        created_dt = m.get("created_at") or m.get("created")
-        if not created_dt:
-            continue
-        try:
-            created_dt = datetime.datetime.fromisoformat(created_dt.replace("Z", "+00:00"))
-        except:
-            continue
-        if (now - created_dt).days >= 7:   
-            st = requests.delete(
-                f"{USER_MGMT_BASE}/v2/accounts/{ACCOUNT_ID}/users/{iam_id}",
-                headers={"Authorization": f"Bearer {iam_token}"}
-            ).status_code
-            deleted.append({"iam_id": iam_id, "delete_status": st})
-    return jsonify({"deleted": deleted, "checked": len(members)}), 200
+        if not group_id:
+            return jsonify({
+                "ok": False,
+                "error": "access group not found"
+            }), 404
+
+        members = list_group_members(iam_token, group_id)
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        deleted = []
+        skipped = []
+
+        for member in members:
+            iam_id = member.get("iam_id") or member.get("id")
+            created = (
+                member.get("created_at")
+                or member.get("created")
+            )
+
+            if not iam_id or not created:
+                skipped.append({
+                    "iam_id": iam_id,
+                    "reason": "missing creation date"
+                })
+                continue
+
+            try:
+                created_date = datetime.datetime.fromisoformat(
+                    created.replace("Z", "+00:00")
+                )
+            except ValueError:
+                skipped.append({
+                    "iam_id": iam_id,
+                    "reason": "invalid creation date"
+                })
+                continue
+
+            if now - created_date < datetime.timedelta(days=ALLOWED_ACCESS_DAYS):
+                continue
+
+            response = requests.delete(
+                f"{USER_MGMT_BASE}/v2/accounts/"
+                f"{ACCOUNT_ID}/users/{iam_id}",
+                headers=auth_headers(iam_token),
+                timeout=30
+            )
+
+            if not response.ok:
+                log_api_error("delete expired user", response)
+
+            deleted.append({
+                "iam_id": iam_id,
+                "status": response.status_code
+            })
+
+        return jsonify({
+            "ok": True,
+            "checked": len(members),
+            "deleted": deleted,
+            "skipped": skipped
+        }), 200
+
+    except requests.HTTPError as error:
+        transaction_id = log_api_error(
+            "cleanup",
+            error.response
+        )
+
+        return jsonify({
+            "ok": False,
+            "status": error.response.status_code,
+            "transaction_id": transaction_id
+        }), 502
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)
+    logger.info(
+        "Starting PowerVS Student Invite API %s",
+        RELEASE_VERSION
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        debug=False
+    )
