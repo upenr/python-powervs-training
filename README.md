@@ -6,7 +6,7 @@ A Flask service for IBM PowerVS technical training labs. This app provides stude
 
 - Invites a student to an IBM Cloud account.
 - Adds the student to a configured IAM access group.
-- Creates a time-limited IAM policy for a specific resource group.
+- Uses the permanent IAM policy already assigned to the configured access group.
 - Removes expired users through the cleanup endpoint.
 - Stores course feedback in an IBM Cloudant database.
 - Protects administrative endpoints with an `X-SITE-TOKEN` header.
@@ -64,12 +64,4 @@ curl -X POST http://localhost:8080/invite \
   -H "Content-Type: application/json" \
   -H "X-SITE-TOKEN: your-site-token" \
   -d '{"email":"student@example.com"}'
-```
-
-## Test the feedback endpoint
-
-```bash
-curl -X POST http://localhost:8080/feedback \
-  -H "Content-Type: application/json" \
-  -d '{"course":"QZC51G","class_number":"1234567","name":"Test Student","feedback":"The course is going well."}'
 ```

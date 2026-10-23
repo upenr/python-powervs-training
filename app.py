@@ -12,7 +12,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv()
 
-RELEASE_VERSION = "2.9"
+RELEASE_VERSION = "3.0"
 RATE_LIMIT = 3
 RATE_WINDOW = 24 * 60 * 60
 
@@ -158,62 +158,6 @@ def invite_user(iam_token, email, first_name, last_name, group_id):
     return response
 
 
-def create_policy(iam_token, group_id, email):
-    now = datetime.datetime.now(datetime.timezone.utc)
-    expires = now + datetime.timedelta(days=ALLOWED_ACCESS_DAYS)
-    start_iso = now.strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    end_iso = expires.strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    payload = {
-        "type": "access",
-        "description": f"Temporary access for {email}, expires {end_iso}",
-        "subject": {
-            "attributes": [{
-                "key": "access_group_id",
-                "operator": "stringEquals",
-                "value": group_id,
-            }]
-        },
-        "resource": {
-            "attributes": [
-                {"key": "accountId", "operator": "stringEquals", "value": ACCOUNT_ID},
-                {
-                    "key": "resourceGroupId",
-                    "operator": "stringEquals",
-                    "value": RESOURCE_GROUP_ID,
-                },
-            ]
-        },
-        "control": {"grant": {"roles": [{"role_id": ROLE_ID}]}},
-        "pattern": "time-based-conditions:once",
-        "rule": {
-            "operator": "and",
-            "conditions": [
-                {
-                    "key": "{{environment.attributes.current_date_time}}",
-                    "operator": "dateTimeGreaterThanOrEquals",
-                    "value": start_iso,
-                },
-                {
-                    "key": "{{environment.attributes.current_date_time}}",
-                    "operator": "dateTimeLessThanOrEquals",
-                    "value": end_iso,
-                },
-            ],
-        },
-    }
-    response = requests.post(
-        POLICIES_V2,
-        params={"account_id": ACCOUNT_ID},
-        json=payload,
-        headers=auth_headers(iam_token, json_content=True),
-        timeout=30,
-    )
-    if not response.ok:
-        log_api_error("create policy", response)
-    response.raise_for_status()
-    return response.json()
-
-
 def list_group_members(iam_token, group_id):
     response = requests.get(
         f"{ACCESS_GROUPS_BASE}/{group_id}/members",
@@ -318,19 +262,17 @@ def invite():
                 "transaction_id": transaction_id,
             }), 502
 
-        policy = create_policy(iam_token, group_id, email)
         logger.info(
-            "Invite completed: email=%s ip=%s policy_id=%s",
+            "Invite completed: email=%s ip=%s access_group_id=%s",
             email,
             ip,
-            policy.get("id"),
+            group_id,
         )
         return jsonify({
             "ok": True,
             "email": email,
             "invite_status": invitation.status_code,
-            "policy_created": True,
-            "policy_id": policy.get("id"),
+            "access_group_id": group_id,
             "access_days": ALLOWED_ACCESS_DAYS,
         })
     except requests.HTTPError as error:
